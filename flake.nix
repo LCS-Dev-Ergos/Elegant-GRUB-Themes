@@ -1,150 +1,102 @@
 {
-  description = "Flake to manage elegant grub2 themes from vinceliuice";
+  description = "Tokyo Night GRUB theme, derived from vinceliuice's Elegant-grub2-themes";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    elegant-grub2-theme-src = {
-      url = "github:vinceliuice/Elegant-grub2-themes";
-      flake = false;
-    };
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-  outputs = { self, nixpkgs, elegant-grub2-theme-src }:
+  outputs = { self, nixpkgs }:
     let
       supportedSystems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+
+      resolutions = {
+        "1080p" = "1920x1080";
+        "1440p" = "2560x1440";
+        "1600p" = "2560x1600";
+        "4k" = "3840x2160";
+      };
+
+      defaults = {
+        type = "window";
+        side = "left";
+        screen = "1080p";
+        photo = "mountain";
+        logo = "cachyos";
+        grade = "soft";
+      };
+
+      # Builds the theme with tools/build.py; theme directory is $out/tokyonight.
+      mkTheme = pkgs: opts:
+        let
+          o = defaults // opts;
+          python = pkgs.python3.withPackages (ps: [ ps.pillow ]);
+        in
+        pkgs.runCommand "grub-tokyonight" { nativeBuildInputs = [ python ]; } ''
+          mkdir -p "$out"
+          python3 ${self}/tools/build.py "$out/tokyonight" \
+            -s ${o.screen} -p ${o.type} -i ${o.side} -g ${o.grade} \
+            -l ${pkgs.lib.escapeShellArg o.logo} \
+            -f ${pkgs.lib.escapeShellArg "${o.photo}"}
+        '';
     in
     {
-      packages = forAllSystems (system: 
-        let 
-          pkgs = nixpkgs.legacyPackages.${system};
-        in {
-          default = pkgs.stdenv.mkDerivation {
-            name = "elegant-grub2-theme-source";
-            src = elegant-grub2-theme-src;
-            
-            installPhase = ''
-              mkdir -p $out
-              cp -r ./* $out/
-            '';
-          };
-        }
-      );
+      packages = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system}; in
+        { default = mkTheme pkgs { }; });
+
+      # `nix flake check` builds the theme with default options
+      checks = forAllSystems (system: { theme = self.packages.${system}.default; });
+
+      devShells = forAllSystems (system:
+        let pkgs = nixpkgs.legacyPackages.${system}; in
+        { default = pkgs.mkShell { packages = [ (pkgs.python3.withPackages (ps: [ ps.pillow ])) ]; }; });
 
       nixosModules.default = { config, lib, pkgs, ... }:
         let
-          cfg = config.boot.loader.elegant-grub2-theme;
-          
-          resolutions = {
-            "1080p" = "1920x1080";
-            "2k" = "2560x1440";
-            "4k" = "3840x2160";
-          };
-          
-          themeName = "Elegant-${cfg.theme}-${cfg.type}-${cfg.side}-${cfg.color}";
-          
-          elegant-grub2-theme = pkgs.stdenv.mkDerivation {
-            name = "elegant-grub2-theme";
-            src = elegant-grub2-theme-src;
-            buildInputs = [ pkgs.imagemagick ];
-            installPhase = ''
-              mkdir -p $out/grub/themes
-              
-              # Generate theme
-              bash ./generate.sh \
-                -d "$out/grub/themes" \
-                -t ${cfg.theme} \
-                -p ${cfg.type} \
-                -i ${cfg.side} \
-                -c ${cfg.color} \
-                -s ${cfg.screen} \
-                -l ${cfg.logo}
-              
-              ${lib.optionalString (cfg.splashImage != null) ''
-                # Find the generated theme directory and replace background
-                theme_dir=$(find $out/grub/themes -maxdepth 1 -type d -name "Elegant-*" | head -n 1)
-                if [ -n "$theme_dir" ] && [ -f "$theme_dir/background.jpg" ]; then
-                  rm -f "$theme_dir/background.jpg"
-                  ${pkgs.imagemagick}/bin/convert ${cfg.splashImage} "$theme_dir/background.jpg"
-                fi
-              ''}
-            '';
-          };
-          
-          resolution = resolutions."${cfg.screen}";
+          cfg = config.boot.loader.tokyonight-grub-theme;
+          theme = mkTheme pkgs { inherit (cfg) type side screen logo grade; photo = cfg.photo; };
+          themeDir = "${theme}/tokyonight";
+          resolution = resolutions.${cfg.screen};
         in
         {
-          options.boot.loader.elegant-grub2-theme = {
-            enable = lib.mkOption {
-              default = false;
-              example = true;
-              type = lib.types.bool;
-              description = ''
-                Enable elegant grub2 theming
-              '';
-            };
-            theme = lib.mkOption {
-              default = "forest";
-              example = "forest";
-              type = lib.types.enum [ "forest" "mojave" "mountain" "wave" ];
-              description = ''
-                Background theme variant to use for grub2.
-              '';
-            };
+          options.boot.loader.tokyonight-grub-theme = {
+            enable = lib.mkEnableOption "the Tokyo Night GRUB theme";
             type = lib.mkOption {
-              default = "window";
-              example = "window";
               type = lib.types.enum [ "window" "float" "sharp" "blur" ];
-              description = ''
-                Theme style variant to use for grub2.
-              '';
+              default = defaults.type;
+              description = "Theme style.";
             };
             side = lib.mkOption {
-              default = "left";
-              example = "left";
               type = lib.types.enum [ "left" "right" ];
-              description = ''
-                Picture display side for grub2.
-              '';
-            };
-            color = lib.mkOption {
-              default = "dark";
-              example = "dark";
-              type = lib.types.enum [ "dark" "light" ];
-              description = ''
-                Background color variant to use for grub2.
-              '';
+              default = defaults.side;
+              description = "Photo side.";
             };
             screen = lib.mkOption {
-              default = "1080p";
-              example = "1080p";
-              type = lib.types.enum [ "1080p" "2k" "4k" ];
-              description = ''
-                The screen display variant to use for grub2.
-              '';
+              type = lib.types.enum (builtins.attrNames resolutions);
+              default = defaults.screen;
+              description = "Screen resolution (1600p = 2560x1600).";
+            };
+            photo = lib.mkOption {
+              type = lib.types.either lib.types.str lib.types.path;
+              default = defaults.photo;
+              example = lib.literalExpression "./background.jpg";
+              description = "Name of a photo in backgrounds/ or path to an image (jpg, png, webp).";
             };
             logo = lib.mkOption {
-              default = "default";
-              example = "default";
-              type = lib.types.enum [ "default" "system" ];
-              description = ''
-                Logo variant to use for grub2.
-              '';
+              type = lib.types.str;
+              default = defaults.logo;
+              description = "Name of a logo in assets/logos/ or \"none\".";
             };
-            splashImage = lib.mkOption {
-              default = null;
-              example = "/my/path/background.jpg";
-              type = lib.types.nullOr lib.types.path;
-              description = ''
-                The path of the image to use for background (must be jpg or png).
-              '';
+            grade = lib.mkOption {
+              type = lib.types.enum [ "none" "soft" "full" ];
+              default = defaults.grade;
+              description = "Color grading of the photo towards the palette.";
             };
           };
 
           config = lib.mkIf cfg.enable {
             boot.loader.grub = {
-              theme = "${elegant-grub2-theme}/grub/themes/${themeName}";
-              splashImage = "${elegant-grub2-theme}/grub/themes/${themeName}/background.jpg";
+              theme = themeDir;
+              splashImage = "${themeDir}/background.jpg";
               gfxmodeEfi = "${resolution},auto";
               gfxmodeBios = "${resolution},auto";
               extraConfig = ''
