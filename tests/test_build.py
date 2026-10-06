@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import build
 from errors import BuildError
-from layout import SCREENS, SIDES, TYPES, compute
+from layout import SCREENS, SIDES, TYPES, compute, theme_txt
+from validate import validate
 
 # ----- TEST SUITE ----------------------------------------------------------- #
 
@@ -56,11 +57,42 @@ class BuildTest(unittest.TestCase):
                 )
 
     def test_theme_txt_percentages_in_range(self):
-        """Verify that all percentage values in theme.txt stay between 0% and 100%."""
+        """Reject decimal geometry that GRUB cannot load in any supported layout."""
+        for screen, style, side in itertools.product(SCREENS, TYPES, SIDES):
+            with self.subTest(screen=screen, style=style, side=side):
+                text = theme_txt(compute(screen, style, side))
+                values = re.findall(r"^  (?:left|top|width|height) = (.+)$", text, re.M)
+                self.assertTrue(values)
+                for value in values:
+                    self.assertRegex(value, r"^\d+%(?:[+-]\d+)?$")
+                    self.assertTrue(0 <= int(value.split("%")[0]) <= 100, value)
+
+    def test_decimal_geometry_is_rejected_before_installation(self):
+        """Prevent a valid asset bundle with invalid theme geometry from being installed."""
         out = self.tmp / "t"
-        build.build(out, "1600p", "window", "right", self.photo("p.jpg"), "cachyos", "none")
-        for value in re.findall(r"= (\d+\.\d+)%", (out / "theme.txt").read_text()):
-            self.assertTrue(0 <= float(value) <= 100, value)
+        build.build(out, "1600p", "window", "left", self.photo("p.jpg"), "cachyos", "none")
+        text = (out / "theme.txt").read_text()
+        for prop in ("left", "top", "width", "height", "terminal-width"):
+            with self.subTest(property=prop):
+                invalid = re.sub(
+                    rf"^([ \t]*{prop}[ \t]*[=:])[ \t]*.*$",
+                    r"\1 46.60%",
+                    text,
+                    count=1,
+                    flags=re.M,
+                )
+                (out / "theme.txt").write_text(invalid)
+                with self.assertRaisesRegex(BuildError, "proportional"):
+                    validate(out, compute("1600p", "window", "left"))
+
+    def test_menu_geometry_preserves_native_pixel_alignment(self):
+        """Keep the menu aligned when replacing decimal percentages with integer expressions."""
+        text = theme_txt(compute("1600p", "window", "left"))
+        values = re.findall(r"^  (?:left|top|width|height) = (.+)$", text, re.M)[:4]
+        self.assertEqual(len(values), 4)
+        for value, extent, expected in zip(values, (2560, 1600, 2560, 1600), (1193, 478, 895, 588)):
+            percent, offset = value.split("%", 1)
+            self.assertEqual(int(percent) * extent // 100 + int(offset or "0"), expected)
 
     def test_odd_inputs_are_accepted(self):
         """Verify that odd image formats (alpha channel, tiny sizes, portrait orientation) are handled safely."""

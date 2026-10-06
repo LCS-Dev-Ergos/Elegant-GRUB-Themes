@@ -29,6 +29,7 @@ CLASSES = (
     "fedora",
     "ubuntu",
 )
+PROPORTIONAL = re.compile(r"(?:0|[1-9][0-9]*)%?(?:[+-](?:0|[1-9][0-9]*)%?)*")
 
 
 # ----- VALIDATION ROUTINES -------------------------------------------------- #
@@ -46,6 +47,16 @@ def validate(theme, lay: Layout):
             if bg.size != lay["size"]:
                 errors.append(f"background.jpg is {bg.size}, expected {lay['size']}")
         text = (theme / "theme.txt").read_text()
+        for prop, value in re.findall(
+            r"^[ \t]*((?:terminal-)?(?:left|top|width|height))[ \t]*[=:][ \t]*(.+)$",
+            text,
+            re.M,
+        ):
+            value = value.strip()
+            if value.startswith('"') and value.endswith('"'):
+                value = value[1:-1]
+            if not PROPORTIONAL.fullmatch(value):
+                errors.append(f"invalid proportional value for {prop}: {value!r}")
         for ref in re.findall(r'(?:file|desktop-image)\s*[=:]\s*"([^"]+)"', text):
             if not (theme / ref).is_file():
                 errors.append(f"theme.txt references {ref}, which does not exist")

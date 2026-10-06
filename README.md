@@ -58,7 +58,7 @@ The script copies the theme to `/boot/grub/themes/tokyonight` (or `/boot/grub2/t
 ### Installation Safety
 
 - Arguments are validated before installation; named assets cannot escape their source directories, including through symlinks. Explicit photo paths are supported separately. `--dry-run` and `--remove` cannot be combined.
-- The theme is built in a temporary directory and validated (required files present, background image dimensions, fonts, icons, layout within screen boundaries). It replaces the installed theme only if validation succeeds.
+- The theme is built in a temporary directory and validated (required files present, background image dimensions, fonts, icons, layout within screen boundaries, and integer proportional expressions accepted by GRUB). It replaces the installed theme only if validation succeeds.
 - The script only replaces or removes directories containing its `.tokyonight-theme` marker.
 - The previous theme and `/etc/default/grub` are retained until configuration generation succeeds. A failed installation restores both, including when reinstalling over an existing theme.
 - `grub.cfg` is generated beside the destination and committed by rename only if non-empty and containing the expected theme reference. Removal checks that the reference is absent. `grub-script-check` validates syntax when available, and the existing file permissions are preserved.
@@ -67,6 +67,8 @@ The script copies the theme to `/boot/grub/themes/tokyonight` (or `/boot/grub2/t
 - With an absolute `DESTDIR` staging path other than `/`, the script operates on an alternate prefix and does not invoke GRUB: useful for testing and packaging.
 
 These checks cover ordinary command failures and handled signals. They do not provide crash recovery after power loss or `SIGKILL`.
+
+Theme geometry uses integer percentages with pixel offsets, such as `46%+16`; GRUB does not accept decimal percentages such as `46.60%`. `grub-script-check` checks the generated boot configuration, while the builder separately checks theme geometry. Actual theme loading and appearance still require boot verification.
 
 `--remove` comments out `GRUB_THEME`, regenerates `grub.cfg`, and deletes the theme directory. `GRUB_GFXMODE` and the graphical terminal remain as configured; to return to the original configuration, use `/etc/default/grub.bak`.
 
