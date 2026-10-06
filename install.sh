@@ -120,6 +120,11 @@ in_list "${TYPE}" window float sharp blur || die "invalid style: ${TYPE}"
 in_list "${SIDE}" left right || die "invalid side: ${SIDE}"
 in_list "${GRADE}" none soft full || die "invalid grade: ${GRADE}"
 [[ "${LOGO}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid logo name: ${LOGO}"
+[[ "${REMOVE}" == false || "${DRY_RUN}" == false ]] || die "--remove and --dry-run cannot be combined."
+if [[ -n "${DESTDIR}" ]]; then
+  [[ "${DESTDIR}" == /* && "${DESTDIR}" != / ]] || die "DESTDIR must be an absolute staging directory, not /."
+  DESTDIR="${DESTDIR%/}"
+fi
 
 if [[ -z "${DESTDIR}" && "${DRY_RUN}" == false ]]; then
   [[ "${EUID}" -eq 0 ]] || die "run as root (or use --dry-run)."
@@ -150,8 +155,8 @@ set_option() { # set or add KEY=VALUE in /etc/default/grub
 # Regenerate grub.cfg in a temporary file and install it only if it contains (or does not contain) the expected theme.
 regenerate_grub_cfg() {
   local want="${1}" mkconfig cfg="${DESTDIR}${GRUB_BASE}/grub.cfg" tmp
-  mkconfig="$(command -v grub-mkconfig || command -v grub2-mkconfig)" || die "grub-mkconfig not found."
-  tmp="$(mktemp)"
+  mkconfig="$(command -v grub-mkconfig || command -v grub2-mkconfig)" || return 1
+  tmp="$(mktemp "${cfg}.tmp.XXXXXX")" || return 1
   "${mkconfig}" -o "${tmp}" || {
     rm -f "${tmp}"
     return 1
@@ -166,33 +171,102 @@ regenerate_grub_cfg() {
     echo "generated grub.cfg does not contain the theme" >&2
     return 1
   fi
-  [[ ! -f "${cfg}" || -f "${cfg}.pre-${THEME_NAME}" ]] || cp -a "${cfg}" "${cfg}.pre-${THEME_NAME}"
-  install -m 644 "${tmp}" "${cfg}"
+  if [[ "${want}" == absent ]] && grep -q "themes/${THEME_NAME}/theme.txt" "${tmp}"; then
+    rm -f "${tmp}"
+    echo "generated grub.cfg still references the removed theme" >&2
+    return 1
+  fi
+  local checker
+  checker="$(command -v grub-script-check || command -v grub2-script-check || true)"
+  if [[ -n "${checker}" ]] && ! "${checker}" "${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
+  if [[ -f "${cfg}" ]]; then
+    if [[ ! -f "${cfg}.pre-${THEME_NAME}" ]] && ! cp -a "${cfg}" "${cfg}.pre-${THEME_NAME}"; then
+      rm -f "${tmp}"
+      return 1
+    fi
+    chmod --reference="${cfg}" "${tmp}" || { rm -f "${tmp}"; return 1; }
+  else
+    chmod 600 "${tmp}" || { rm -f "${tmp}"; return 1; }
+  fi
+  # Same-filesystem rename leaves the previous file intact if the commit fails.
+  mv -f "${tmp}" "${cfg}" || { rm -f "${tmp}"; return 1; }
   rm -f "${tmp}"
 }
 
 # ----- INSTANCE LOCK -------------------------------------------------------- #
 
-exec 9>"${TMPDIR:-/tmp}/grub-${THEME_NAME}.lock"
-flock -n 9 || die "another instance is already running."
+lock_instance() {
+  local lock_dir="${DESTDIR}/run/grub-${THEME_NAME}"
+  mkdir -p "${DESTDIR}/run"
+  [[ -d "${lock_dir}" ]] || mkdir -m 700 "${lock_dir}"
+  [[ ! -L "${lock_dir}" && -O "${lock_dir}" ]] || die "unsafe lock directory: ${lock_dir}"
+  chmod 700 "${lock_dir}"
+  [[ ! -L "${lock_dir}/install.lock" ]] || die "lock file is a symlink: refusing to open it."
+  exec 9>"${lock_dir}/install.lock"
+  flock -n 9 || die "another instance is already running."
+}
+
+# ----- TRANSACTION CLEANUP -------------------------------------------------- #
+
+WORK="" CONFIG_CHANGED=false THEME_CHANGED=false COMMITTED=false
+cleanup() {
+  local status=$? rollback_failed=false
+  trap - EXIT
+  if [[ -n "${WORK}" ]]; then
+    if [[ "${COMMITTED}" == false ]]; then
+      if "${CONFIG_CHANGED}"; then
+        cp -a "${WORK}/grub-default" "${GRUB_DEFAULT_FILE}" || { status=1; rollback_failed=true; }
+      fi
+      if "${THEME_CHANGED}" || [[ -d "${WORK}/previous-theme" ]]; then
+        rm -rf "${DESTDIR}${THEME_DIR}" || { status=1; rollback_failed=true; }
+        if [[ -d "${WORK}/previous-theme" ]]; then
+          mv "${WORK}/previous-theme" "${DESTDIR}${THEME_DIR}" || { status=1; rollback_failed=true; }
+        fi
+      fi
+    fi
+    if "${rollback_failed}" || [[ -d "${WORK}/previous-theme" && "${COMMITTED}" == false ]]; then
+      echo "Rollback incomplete; recovery files retained in ${WORK}" >&2
+      status=1
+    else
+      rm -rf "${WORK}"
+    fi
+  fi
+  exit "${status}"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+start_transaction() {
+  [[ ! -L "${DESTDIR}${THEME_DIR}" ]] || die "${THEME_DIR} is a symlink: refusing to modify it."
+  if [[ -e "${DESTDIR}${THEME_DIR}" && ! -f "${DESTDIR}${THEME_DIR}/${MARKER}" ]]; then
+    die "${THEME_DIR} was not created by this script: refusing to modify it."
+  fi
+  mkdir -p "${DESTDIR}${THEME_DIR%/*}"
+  WORK="$(mktemp -d "${DESTDIR}${THEME_DIR%/*}/.tokyonight-install.XXXXXX")"
+  cp -a "${GRUB_DEFAULT_FILE}" "${WORK}/grub-default"
+}
 
 # ----- THEME REMOVAL -------------------------------------------------------- #
 
 if "${REMOVE}"; then
+  lock_instance
   [[ -f "${GRUB_DEFAULT_FILE}" ]] || die "${GRUB_DEFAULT_FILE} not found."
-  if [[ -d "${DESTDIR}${THEME_DIR}" && ! -f "${DESTDIR}${THEME_DIR}/${MARKER}" ]]; then
-    die "${THEME_DIR} was not created by this script: refusing to remove."
+  start_transaction
+  if [[ -d "${DESTDIR}${THEME_DIR}" ]]; then
+    mv "${DESTDIR}${THEME_DIR}" "${WORK}/previous-theme"
+    THEME_CHANGED=true
   fi
-  backup="$(mktemp)"
-  cp -a "${GRUB_DEFAULT_FILE}" "${backup}"
-  sed -i "s|^GRUB_THEME=\"\?${THEME_DIR}/theme.txt\"\?|#&|" "${GRUB_DEFAULT_FILE}"
+  CONFIG_CHANGED=true
+  sed -i -E "\\|^[[:space:]]*GRUB_THEME=['\"]?${THEME_DIR}/theme[.]txt['\"]?([[:space:]]*(#.*)?)?$|s|^|#|" "${GRUB_DEFAULT_FILE}"
   if [[ -z "${DESTDIR}" ]] && ! regenerate_grub_cfg absent; then
-    cp -a "${backup}" "${GRUB_DEFAULT_FILE}"
-    rm -f "${backup}"
-    die "grub.cfg regeneration failed: /etc/default/grub restored."
+    die "grub.cfg regeneration failed; restoring /etc/default/grub."
   fi
-  rm -f "${backup}"
-  rm -rf "${DESTDIR}${THEME_DIR}"
+  COMMITTED=true
   echo "Theme removed. GRUB_GFXMODE and graphical terminal remain as configured."
   exit 0
 fi
@@ -204,7 +278,7 @@ python3 -c 'import PIL' 2>/dev/null || die "Pillow is required (Arch/CachyOS: pa
 build_args
 
 if "${DRY_RUN}"; then
-  check="$(mktemp -d)"
+  check="$(mktemp -d "${TMPDIR:-/tmp}/tokyonight-check.XXXXXX")"
   trap 'rm -rf "${check}"' EXIT
   python3 "${REPO_DIR}/tools/build.py" "${check}/theme" "${BUILD_ARGS[@]}"
   echo "Dry run successful (${SCREEN}, ${TYPE}, ${SIDE}): valid theme, system unmodified."
@@ -212,28 +286,27 @@ if "${DRY_RUN}"; then
 fi
 
 [[ -f "${GRUB_DEFAULT_FILE}" ]] || die "${GRUB_DEFAULT_FILE} not found."
+lock_instance
 echo "Building theme (${SCREEN}, ${TYPE}, ${SIDE}) in ${THEME_DIR}"
-had_theme=false
-[[ ! -d "${DESTDIR}${THEME_DIR}" ]] || had_theme=true
-mkdir -p "${DESTDIR}${THEME_DIR%/*}"
-python3 "${REPO_DIR}/tools/build.py" "${DESTDIR}${THEME_DIR}" "${BUILD_ARGS[@]}"
-
-backup="$(mktemp)"
-cp -a "${GRUB_DEFAULT_FILE}" "${backup}"
+start_transaction
+python3 "${REPO_DIR}/tools/build.py" "${WORK}/new-theme" "${BUILD_ARGS[@]}"
 [[ -f "${GRUB_DEFAULT_FILE}.bak" ]] || cp -a "${GRUB_DEFAULT_FILE}" "${GRUB_DEFAULT_FILE}.bak"
+if [[ -d "${DESTDIR}${THEME_DIR}" ]]; then
+  mv "${DESTDIR}${THEME_DIR}" "${WORK}/previous-theme"
+fi
+THEME_CHANGED=true
+mv "${WORK}/new-theme" "${DESTDIR}${THEME_DIR}"
+CONFIG_CHANGED=true
 set_option GRUB_THEME "\"${THEME_DIR}/theme.txt\""
 case "${SCREEN}" in
   1080p) set_option GRUB_GFXMODE "1920x1080,auto" ;; 1440p) set_option GRUB_GFXMODE "2560x1440,auto" ;;
   1600p) set_option GRUB_GFXMODE "2560x1600,auto" ;; 4k) set_option GRUB_GFXMODE "3840x2160,auto" ;;
 esac
-# the theme requires a graphical terminal
+# The theme requires a graphical terminal
 sed -i -E 's|^GRUB_TERMINAL(_OUTPUT)?="?console"?|#&|' "${GRUB_DEFAULT_FILE}"
 
 if [[ -z "${DESTDIR}" ]] && ! regenerate_grub_cfg present; then
-  cp -a "${backup}" "${GRUB_DEFAULT_FILE}"
-  rm -f "${backup}"
-  "${had_theme}" || rm -rf "${DESTDIR}${THEME_DIR}" # a failed fresh install leaves no leftovers
-  die "GRUB update failed: /etc/default/grub restored, grub.cfg unchanged."
+  die "GRUB update failed; restoring defaults and previous theme, grub.cfg unchanged."
 fi
-rm -f "${backup}"
+COMMITTED=true
 echo "Done: theme will appear on next reboot. To revert: sudo ./install.sh --remove"

@@ -26,9 +26,10 @@ class InstallTest(unittest.TestCase):
         self.cfg.write_text(GRUB_DEFAULT)
         self.theme = self.root / "boot/grub/themes/tokyonight"
 
-    def run_install(self, *args):
+    def run_install(self, *args, extra_env=None):
         """Execute install.sh within the sandboxed DESTDIR and TMPDIR environment."""
         env = dict(os.environ, DESTDIR=str(self.root), TMPDIR=str(self.root))
+        env.update(extra_env or {})
         return subprocess.run(
             [str(ROOT / "install.sh"), *args], env=env, capture_output=True, text=True
         )
@@ -90,6 +91,60 @@ class InstallTest(unittest.TestCase):
                 self.assertNotEqual(self.run_install(*args).returncode, 0)
                 self.assertEqual(self.cfg.read_text(), GRUB_DEFAULT)
                 self.assertFalse(self.theme.exists())
+
+    def failing_sed(self):
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        script = bin_dir / "sed"
+        script.write_text("#!/bin/sh\nexit 1\n")
+        script.chmod(0o755)
+        return {"PATH": f"{bin_dir}:{os.environ['PATH']}"}
+
+    def test_configuration_failure_restores_previous_theme(self):
+        self.assertEqual(self.run_install("-s", "1080p", "-f", "forest").returncode, 0)
+        before_cfg = self.cfg.read_bytes()
+        before_theme = (self.theme / "background.jpg").read_bytes()
+        result = self.run_install("-s", "1600p", "-f", "wave", extra_env=self.failing_sed())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.cfg.read_bytes(), before_cfg)
+        self.assertEqual((self.theme / "background.jpg").read_bytes(), before_theme)
+
+    def test_failed_fresh_install_leaves_no_theme(self):
+        result = self.run_install("-s", "1080p", "-f", "forest", extra_env=self.failing_sed())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.cfg.read_text(), GRUB_DEFAULT)
+        self.assertFalse(self.theme.exists())
+
+    def test_remove_and_dry_run_are_rejected_together(self):
+        self.assertEqual(self.run_install("-s", "1080p", "-f", "forest").returncode, 0)
+        before = self.cfg.read_bytes()
+        result = self.run_install("--dry-run", "--remove")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.theme.exists())
+        self.assertEqual(self.cfg.read_bytes(), before)
+
+    def test_failed_remove_restores_theme_and_defaults(self):
+        self.assertEqual(self.run_install("-s", "1080p", "-f", "forest").returncode, 0)
+        before_cfg = self.cfg.read_bytes()
+        before_theme = (self.theme / "background.jpg").read_bytes()
+        result = self.run_install("--remove", extra_env=self.failing_sed())
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.cfg.read_bytes(), before_cfg)
+        self.assertEqual((self.theme / "background.jpg").read_bytes(), before_theme)
+
+    def test_remove_handles_single_quotes_without_disabling_other_theme(self):
+        self.assertEqual(self.run_install("-s", "1080p", "-f", "forest").returncode, 0)
+        self.cfg.write_text(
+            "GRUB_THEME='/boot/grub/themes/tokyonight/theme.txt' # installed\n"
+            "GRUB_THEME='/boot/grub/themes/tokyonight/theme.txt.other'\n"
+        )
+        result = self.run_install("--remove")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.cfg.read_text(),
+            "#GRUB_THEME='/boot/grub/themes/tokyonight/theme.txt' # installed\n"
+            "GRUB_THEME='/boot/grub/themes/tokyonight/theme.txt.other'\n",
+        )
 
 
 # ----- TEST RUNNER ---------------------------------------------------------- #
