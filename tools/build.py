@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from errors import BuildError
-from layout import FONTS, SCREENS, SIDES, TYPES, compute, theme_txt
+from layout import FONTS, SCREENS, SIDES, TYPES, Layout, compute, theme_txt
 from palette import rgb
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 from validate import validate
@@ -32,7 +32,7 @@ def rounded_mask(size, radius, corners=(True,) * 4):
     ImageDraw.Draw(m).rounded_rectangle(
         (0, 0, m.width - 1, m.height - 1), radius * SS, fill=255, corners=corners
     )
-    return m.resize(size, Image.LANCZOS)
+    return m.resize(size, Image.Resampling.LANCZOS)
 
 
 def grade(img, mode):
@@ -46,8 +46,10 @@ def grade(img, mode):
 def photo_panel(photo, rect, radius, side):
     """Crop the photo to the panel and add a dark gradient at the bottom for readability of key hints."""
     w, h = rect[2:]
-    panel = ImageOps.fit(photo, (w, h), Image.LANCZOS, centering=(0.5, 0.5)).convert("RGBA")
-    ramp = Image.linear_gradient("L").resize((w, h)).point(lambda v: 50 + max(0, v - 130) * 0.8)
+    panel = ImageOps.fit(photo, (w, h), Image.Resampling.LANCZOS, centering=(0.5, 0.5)).convert("RGBA")
+    # An explicit 8-bit lookup table avoids Pillow's symbolic-transform callback overload.
+    ramp_lut = [50 + max(0, v - 130) * 0.8 for v in range(256)]
+    ramp = Image.linear_gradient("L").resize((w, h)).point(ramp_lut)
     panel.alpha_composite(
         Image.merge("RGBA", (*[Image.new("L", (w, h), c) for c in rgb("bg_dark")], ramp))
     )
@@ -55,11 +57,11 @@ def photo_panel(photo, rect, radius, side):
 
 
 def blurred(photo, size, radius, dim):
-    bg = ImageOps.fit(photo, size, Image.LANCZOS).filter(ImageFilter.GaussianBlur(radius))
+    bg = ImageOps.fit(photo, size, Image.Resampling.LANCZOS).filter(ImageFilter.GaussianBlur(radius))
     return Image.blend(bg, Image.new("RGB", size, rgb("bg_dark")), dim)
 
 
-def background(lay, style, side, photo):
+def background(lay: Layout, style, side, photo):
     size, u = lay["size"], lay["u"]
     img = Image.new("RGB", size, rgb("bg_dark"))
     cx, cy, cw, ch = lay["card"]
@@ -95,7 +97,7 @@ def selectors(dest, font):
 
 
 def tinted(src, size, tint=None):
-    img = Image.open(src).convert("RGBA").resize((size, size), Image.LANCZOS)
+    img = Image.open(src).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
     if tint:
         a = img.getchannel("A")
         img = ImageChops.multiply(img.convert("RGB"), Image.new("RGB", img.size, tint)).convert(

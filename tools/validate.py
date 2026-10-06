@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from errors import BuildError
-from layout import FONTS
+from layout import FONTS, Layout
 from PIL import Image
 
 # ----- CONSTANTS & REQUIREMENTS --------------------------------------------- #
@@ -38,7 +38,7 @@ def overlaps(a, b):
     return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
 
 
-def validate(theme, lay):
+def validate(theme, lay: Layout):
     theme = Path(theme)
     errors = [f"missing {f}" for f in REQUIRED if not (theme / f).is_file()]
     if not errors:

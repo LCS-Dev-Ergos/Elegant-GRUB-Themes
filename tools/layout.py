@@ -1,5 +1,7 @@
 """Theme geometry by resolution, style, and side. All rectangles are (x, y, w, h) in pixels."""
 
+from typing import TypedDict
+
 from palette import PALETTE
 
 # ----- THEME SPECIFICATIONS & PRESETS --------------------------------------- #
@@ -18,11 +20,26 @@ FONTS = {  # font: item height, icon, icon-text space, padding, spacing
 TYPES = ("window", "float", "sharp", "blur")
 SIDES = ("left", "right")
 
+Size = tuple[int, int]
+Rect = tuple[int, int, int, int]
+
+
+class Layout(TypedDict):
+    size: Size
+    font: int
+    u: float
+    card: Rect
+    photo: Rect
+    menu: Rect
+    logo: int
+    card_radius: int
+    photo_radius: int
+
 
 # ----- GEOMETRY COMPUTATION ------------------------------------------------- #
 
 
-def compute(screen, style, side):
+def compute(screen: str, style: str, side: str) -> Layout:
     """Compute card, photo, menu, and logo; geometry scales with height (1080 = 1x)."""
     w, h, font = SCREENS[screen]
     u = h / 1080
@@ -43,23 +60,23 @@ def compute(screen, style, side):
     if side == "right":  # mirror photo/menu order within the card
         photo = (cx + cw - (photo[0] - cx) - photo[2],) + photo[1:]
         menu = (cx + cw - (menu[0] - cx) - menu[2],) + menu[1:]
-    return dict(
-        size=(w, h),
-        font=font,
-        u=u,
-        card=card,
-        photo=photo,
-        menu=menu,
-        logo=logo,
-        card_radius=round(22 * u) if style == "window" else 0,
-        photo_radius=round(14 * u) if style in ("window", "float") else 0,
-    )
+    return {
+        "size": (w, h),
+        "font": font,
+        "u": u,
+        "card": card,
+        "photo": photo,
+        "menu": menu,
+        "logo": logo,
+        "card_radius": round(22 * u) if style == "window" else 0,
+        "photo_radius": round(14 * u) if style in ("window", "float") else 0,
+    }
 
 
 # ----- GRUB THEME CONFIGURATION GENERATOR ----------------------------------- #
 
 
-def theme_txt(lay):
+def theme_txt(lay: Layout) -> str:
     """Generate theme.txt: percentage positions so they handle GRUB fallback to a different video mode."""
     w, h = lay["size"]
     item_h, icon, space, pad, spacing = FONTS[lay["font"]]

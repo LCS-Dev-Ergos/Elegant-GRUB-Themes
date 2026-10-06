@@ -48,14 +48,14 @@ for px, dpi in SIZES.items():
         out.mkdir(parents=True)
         for f in Path(tmp).glob("*.png"):
             img = Image.open(f).convert("RGBA")
-            img = img.resize((px, px), Image.LANCZOS) if img.size != (px, px) else img
+            img = img.resize((px, px), Image.Resampling.LANCZOS) if img.size != (px, px) else img
             alpha = img.getchannel("A")
             tint = ImageChops.multiply(img.convert("RGB"), Image.new("RGB", img.size, rgb("fg")))
             tint.putalpha(alpha)
             tint.save(out / f.name, optimize=True)
     for alias, src in ALIASES.items():
         shutil.copy(out / f"{src}.png", out / f"{alias}.png")
-    logo = Image.open(ROOT / "assets" / "logos" / "cachyos.png").resize((px, px), Image.LANCZOS)
+    logo = Image.open(ROOT / "assets" / "logos" / "cachyos.png").resize((px, px), Image.Resampling.LANCZOS)
     tinted = ImageChops.multiply(logo.convert("RGB"), Image.new("RGB", logo.size, rgb("fg")))
     tinted.putalpha(logo.getchannel("A"))
     tinted.save(out / "cachyos.png", optimize=True)
@@ -83,6 +83,6 @@ with tempfile.TemporaryDirectory() as tmp:
         side = max(img.size)
         square = Image.new("RGBA", (side, side), (255, 255, 255, 0))
         square.paste(img, ((side - img.width) // 2, (side - img.height) // 2))
-        square.resize((512, 512), Image.LANCZOS).save(
+        square.resize((512, 512), Image.Resampling.LANCZOS).save(
             ROOT / "assets" / "logos" / f"{name}.png", optimize=True
         )
