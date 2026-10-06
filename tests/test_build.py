@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -121,6 +122,46 @@ class BuildTest(unittest.TestCase):
         build.build(out, "1600p", "sharp", "left", self.photo("p.jpg"), "none", "soft")
         with Image.open(out / "background.jpg") as bg:
             self.assertEqual(bg.size, (2560, 1600))
+
+    def test_bundled_photos_resolve_after_directory_reorganization(self):
+        for name in ("forest", "mojave", "mountain", "wave", "forest.jpeg"):
+            with self.subTest(name=name):
+                self.assertGreater(build.load_photo(name, (1, 1)).width, 1)
+
+    def test_named_asset_symlinks_cannot_escape_directory(self):
+        assets = self.tmp / "assets"
+        assets.mkdir()
+        (assets / "escape.jpg").symlink_to(self.photo("outside.jpg"))
+        with self.assertRaises(BuildError):
+            build.find_asset(assets, "escape", (".jpg",), "photo")
+
+    def test_failed_promotion_restores_previous_theme(self):
+        out = self.tmp / "t"
+        photo = self.photo("p.jpg")
+        build.build(out, "1080p", "window", "left", photo, "none", "soft")
+        before = (out / "background.jpg").read_bytes()
+        rename = Path.rename
+
+        def fail_stage_promotion(path, target):
+            if Path(target) == out and not path.name.startswith(".t.old"):
+                raise OSError("injected promotion failure")
+            return rename(path, target)
+
+        with patch.object(Path, "rename", fail_stage_promotion), self.assertRaises(OSError):
+            build.build(out, "1600p", "sharp", "left", photo, "none", "soft")
+        self.assertEqual((out / "background.jpg").read_bytes(), before)
+
+    def test_destination_symlink_does_not_move_or_modify_target(self):
+        target = self.tmp / "target"
+        photo = self.photo("p.jpg")
+        build.build(target, "1080p", "window", "left", photo, "none", "soft")
+        out = self.tmp / "link"
+        out.symlink_to(target, target_is_directory=True)
+        before = (target / "background.jpg").read_bytes()
+        with self.assertRaises(BuildError):
+            build.build(out, "1600p", "sharp", "left", photo, "none", "soft")
+        self.assertTrue(out.is_symlink())
+        self.assertEqual((target / "background.jpg").read_bytes(), before)
 
 
 # ----- TEST RUNNER ---------------------------------------------------------- #

@@ -79,7 +79,7 @@
               type = lib.types.either lib.types.str lib.types.path;
               default = defaults.photo;
               example = lib.literalExpression "./background.jpg";
-              description = "Name of a photo in backgrounds/ or path to an image (jpg, png, webp).";
+              description = "Photo name from backgrounds/ or backgrounds/default/, or an image path (jpg, png, webp).";
             };
             logo = lib.mkOption {
               type = lib.types.str;

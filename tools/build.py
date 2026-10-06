@@ -2,10 +2,10 @@
 """Build a complete GRUB theme at native resolution: background, selectors, icons, logo, and theme.txt."""
 
 import argparse
-import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from errors import BuildError
@@ -108,21 +108,34 @@ def tinted(src, size, tint=None):
 # ----- ASSET RESOLUTION & LOADING ------------------------------------------- #
 
 
-def find_asset(directory, name, suffixes, kind):
+def find_asset(directory, name, suffixes, kind, required=True):
     """Find name strictly inside directory: names with path separators are rejected."""
     if not NAME.fullmatch(name):
         raise BuildError(f"invalid {kind}: {name!r}")
-    for suffix in suffixes:
-        if (directory / f"{name}{suffix}").is_file():
-            return directory / f"{name}{suffix}"
-    raise BuildError(f"{kind} {name!r} not found in {directory}")
+    directory = Path(directory).resolve()
+    candidates = [directory / name] if Path(name).suffix.lower() in suffixes else []
+    candidates += [directory / f"{name}{suffix}" for suffix in suffixes]
+    for path in candidates:
+        if path.is_file():
+            if not path.resolve().is_relative_to(directory):
+                raise BuildError(f"{kind} {name!r} resolves outside {directory}")
+            return path
+    if required:
+        raise BuildError(f"{kind} {name!r} not found in {directory}")
+    return None
 
 
 def load_photo(spec, min_size):
     """Open a photo from backgrounds/ (by name) or from a path; normalize orientation and color mode."""
     path = Path(spec)
     if not path.is_file():
-        path = find_asset(ROOT / "backgrounds", spec, (".jpg", ".jpeg", ".png", ".webp"), "photo")
+        suffixes = (".jpg", ".jpeg", ".png", ".webp")
+        for directory in (ROOT / "backgrounds", ROOT / "backgrounds" / "default"):
+            path = find_asset(directory, spec, suffixes, "photo", required=False)
+            if path:
+                break
+        else:
+            raise BuildError(f"photo {spec!r} not found in backgrounds/ or backgrounds/default/")
     try:
         img = ImageOps.exif_transpose(Image.open(path))
         img.load()
@@ -147,15 +160,21 @@ def load_photo(spec, min_size):
 def build(dest, screen, style, side, photo_spec, logo, mode):
     """Build the theme in a staging directory, validate it, and only then replace dest."""
     dest = Path(dest)
+    if dest.is_symlink():
+        raise BuildError(f"{dest} is a symlink: refusing to replace it")
+    if dest.exists() and not (dest / MARKER).is_file():
+        raise BuildError(
+            f"{dest} exists and was not created by this script: refusing to replace it"
+        )
     lay = compute(screen, style, side)
     font = lay["font"]
     photo = grade(load_photo(photo_spec, lay["photo"][2:]), mode)
     logo_path = (
         None if logo == "none" else find_asset(ROOT / "assets" / "logos", logo, (".png",), "logo")
     )
-    stage = dest.parent / f".{dest.name}.tmp-{os.getpid()}"
-    shutil.rmtree(stage, ignore_errors=True)
-    stage.mkdir(parents=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=f".{dest.name}.tmp-", dir=dest.parent))
+    old = dest.parent / f".{dest.name}.old-{stage.name.rsplit('-', 1)[-1]}"
     try:
         background(lay, style, side, photo).save(
             stage / "background.jpg", quality=93, subsampling=0
@@ -171,7 +190,6 @@ def build(dest, screen, style, side, photo_spec, logo, mode):
             shutil.copy(ROOT / "common" / f, stage)
         (stage / MARKER).write_text(f"{screen} {style} {side}\n")
         validate(stage, lay)
-        old = dest.parent / f".{dest.name}.old-{os.getpid()}"
         if dest.exists():
             if not (dest / MARKER).exists():
                 raise BuildError(
@@ -181,6 +199,8 @@ def build(dest, screen, style, side, photo_spec, logo, mode):
         stage.rename(dest)
         shutil.rmtree(old, ignore_errors=True)
     except BaseException:
+        if old.exists() and not dest.exists():
+            old.rename(dest)
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
